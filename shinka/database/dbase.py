@@ -1,20 +1,23 @@
 import json
 import logging
+import math
+import random
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from functools import wraps
 from pathlib import Path
-import random
-import numpy as np
 from typing import Any, Dict, List, Optional, Tuple, Union
-import math
+
+import numpy as np
+
+from shinka.llm.embedding import EmbeddingClient
+
 from .complexity import analyze_code_metrics
-from .parents import CombinedParentSelector
+from .display import DatabaseDisplay
 from .inspirations import CombinedContextSelector
 from .islands import CombinedIslandManager
-from .display import DatabaseDisplay
-from shinka.llm.embedding import EmbeddingClient
+from .parents import CombinedParentSelector
 
 logger = logging.getLogger(__name__)
 
@@ -63,14 +66,10 @@ class DatabaseConfig:
     migration_interval: int = 10  # Migrate every N generations
     migration_rate: float = 0.1  # Prop. of island pop. to migrate
     island_elitism: bool = True  # Keep best prog on their islands
-    enforce_island_separation: bool = (
-        True  # Enforce full island separation for inspirations
-    )
+    enforce_island_separation: bool = True  # Enforce full island separation for inspirations
 
     # Parent selection parameters
-    parent_selection_strategy: str = (
-        "power_law"  # "weighted"/"power_law" / "beam_search"
-    )
+    parent_selection_strategy: str = "power_law"  # "weighted"/"power_law" / "beam_search"
 
     # Power-law parent selection parameters
     exploitation_alpha: float = 1.0  # 0=uniform, 1=power-law
@@ -185,18 +184,12 @@ class Program:
         # Ensure metrics and metadata are dictionaries, even if None/empty from
         # DB or input
         data["public_metrics"] = (
-            data.get("public_metrics")
-            if isinstance(data.get("public_metrics"), dict)
-            else {}
+            data.get("public_metrics") if isinstance(data.get("public_metrics"), dict) else {}
         )
         data["private_metrics"] = (
-            data.get("private_metrics")
-            if isinstance(data.get("private_metrics"), dict)
-            else {}
+            data.get("private_metrics") if isinstance(data.get("private_metrics"), dict) else {}
         )
-        data["metadata"] = (
-            data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-        )
+        data["metadata"] = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
         # Ensure inspiration_ids is a list
         archive_ids_val = data.get("archive_inspiration_ids")
         if isinstance(archive_ids_val, list):
@@ -261,9 +254,9 @@ class ProgramDatabase:
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.read_only = read_only
-        # Only create embedding client if not in read-only mode
+        # Only create embedding client if not in read-only mode and embedding_model is provided
         # (e.g., WebUI doesn't need it for visualization)
-        if not read_only:
+        if not read_only and embedding_model is not None:
             self.embedding_client = EmbeddingClient(model_name=embedding_model)
         else:
             self.embedding_client = None
@@ -332,9 +325,7 @@ class ProgramDatabase:
 
         count = self._count_programs_in_db()
         logger.debug(f"DB initialized with {count} programs.")
-        logger.debug(
-            f"Last iter: {self.last_iteration}. Best ID: {self.best_program_id}"
-        )
+        logger.debug(f"Last iter: {self.last_iteration}. Best ID: {self.best_program_id}")
 
     def _create_tables(self):
         if not self.cursor or not self.conn:
@@ -344,9 +335,7 @@ class ProgramDatabase:
         # Use WAL mode for better concurrency support and reduced locking
         self.cursor.execute("PRAGMA journal_mode = WAL;")
         self.cursor.execute("PRAGMA busy_timeout = 30000;")  # 30 second busy timeout
-        self.cursor.execute(
-            "PRAGMA wal_autocheckpoint = 1000;"
-        )  # Checkpoint every 1000 pages
+        self.cursor.execute("PRAGMA wal_autocheckpoint = 1000;")  # Checkpoint every 1000 pages
         self.cursor.execute("PRAGMA synchronous = NORMAL;")  # Safer, faster
         self.cursor.execute("PRAGMA cache_size = -64000;")  # 64MB cache
         self.cursor.execute("PRAGMA temp_store = MEMORY;")
@@ -384,16 +373,12 @@ class ProgramDatabase:
 
         # Add indices for common query patterns
         idx_cmds = [
-            "CREATE INDEX IF NOT EXISTS idx_programs_generation ON "
-            "programs(generation)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_generation ON " "programs(generation)",
             "CREATE INDEX IF NOT EXISTS idx_programs_timestamp ON programs(timestamp)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_complexity ON "
-            "programs(complexity)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_complexity ON " "programs(complexity)",
             "CREATE INDEX IF NOT EXISTS idx_programs_parent_id ON programs(parent_id)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_children_count ON "
-            "programs(children_count)",
-            "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON "
-            "programs(island_idx)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_children_count ON " "programs(children_count)",
+            "CREATE INDEX IF NOT EXISTS idx_programs_island_idx ON " "programs(island_idx)",
         ]
         for cmd in idx_cmds:
             self.cursor.execute(cmd)
@@ -436,9 +421,7 @@ class ProgramDatabase:
 
             if "text_feedback" not in columns:
                 logger.info("Adding text_feedback column to programs table")
-                self.cursor.execute(
-                    "ALTER TABLE programs ADD COLUMN text_feedback TEXT DEFAULT ''"
-                )
+                self.cursor.execute("ALTER TABLE programs ADD COLUMN text_feedback TEXT DEFAULT ''")
                 self.conn.commit()
                 logger.info("Successfully added text_feedback column")
         except sqlite3.Error as e:
@@ -450,20 +433,14 @@ class ProgramDatabase:
         if not self.cursor:
             raise ConnectionError("DB cursor not available.")
 
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'last_iteration'"
-        )
+        self.cursor.execute("SELECT value FROM metadata_store WHERE key = 'last_iteration'")
         row = self.cursor.fetchone()
-        self.last_iteration = (
-            int(row["value"]) if row and row["value"] is not None else 0
-        )
+        self.last_iteration = int(row["value"]) if row and row["value"] is not None else 0
         if not row or row["value"] is not None:  # Initialize in DB if first time
             if not self.read_only:
                 self._update_metadata_in_db("last_iteration", str(self.last_iteration))
 
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'best_program_id'"
-        )
+        self.cursor.execute("SELECT value FROM metadata_store WHERE key = 'best_program_id'")
         row = self.cursor.fetchone()
         self.best_program_id = (
             str(row["value"])
@@ -476,9 +453,7 @@ class ProgramDatabase:
             if not self.read_only:
                 self._update_metadata_in_db("best_program_id", None)
 
-        self.cursor.execute(
-            "SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'"
-        )
+        self.cursor.execute("SELECT value FROM metadata_store WHERE key = 'beam_search_parent_id'")
         row = self.cursor.fetchone()
         self.beam_search_parent_id = (
             str(row["value"])
@@ -542,17 +517,14 @@ class ProgramDatabase:
                     program.metadata = {}
                 program.metadata["code_analysis_metrics"] = code_metrics
             except Exception as e:
-                logger.warning(
-                    f"Could not calculate complexity for program {program.id}: {e}"
-                )
+                logger.warning(f"Could not calculate complexity for program {program.id}: {e}")
                 program.complexity = float(len(program.code))  # Fallback to length
 
         # Embedding is expected to be provided by the user.
         # Ensure program.embedding is a list, even if empty.
         if not isinstance(program.embedding, list):
             logger.warning(
-                f"Program {program.id} embedding is not a list, "
-                "defaulting to empty list."
+                f"Program {program.id} embedding is not a list, " "defaulting to empty list."
             )
             program.embedding = []
 
@@ -624,8 +596,7 @@ class ProgramDatabase:
             # Increment parent's children_count
             if program.parent_id:
                 self.cursor.execute(
-                    "UPDATE programs SET children_count = children_count + 1 "
-                    "WHERE id = ?",
+                    "UPDATE programs SET children_count = children_count + 1 " "WHERE id = ?",
                     (program.parent_id,),
                 )
 
@@ -665,9 +636,7 @@ class ProgramDatabase:
 
         # Check if this program needs to be copied to other islands
         if self.island_manager.needs_island_copies(program):
-            logger.info(
-                f"Creating copies of initial program {program.id} for all islands"
-            )
+            logger.info(f"Creating copies of initial program {program.id} for all islands")
             self.island_manager.copy_program_to_islands(program)
             # Remove the flag from the original program's metadata
             if program.metadata:
@@ -730,9 +699,7 @@ class ProgramDatabase:
         archive_insp_ids_text = program_data.get("archive_inspiration_ids")
         if archive_insp_ids_text:
             try:
-                program_data["archive_inspiration_ids"] = json.loads(
-                    archive_insp_ids_text
-                )
+                program_data["archive_inspiration_ids"] = json.loads(archive_insp_ids_text)
             except json.JSONDecodeError:
                 program_data["archive_inspiration_ids"] = []
         else:
@@ -987,18 +954,12 @@ class ProgramDatabase:
         for row_data in all_rows:
             p_dict = dict(row_data)
             p_dict["public_metrics"] = (
-                json.loads(p_dict["public_metrics"])
-                if p_dict.get("public_metrics")
-                else {}
+                json.loads(p_dict["public_metrics"]) if p_dict.get("public_metrics") else {}
             )
             p_dict["private_metrics"] = (
-                json.loads(p_dict["private_metrics"])
-                if p_dict.get("private_metrics")
-                else {}
+                json.loads(p_dict["private_metrics"]) if p_dict.get("private_metrics") else {}
             )
-            p_dict["metadata"] = (
-                json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
-            )
+            p_dict["metadata"] = json.loads(p_dict["metadata"]) if p_dict.get("metadata") else {}
             programs.append(Program.from_dict(p_dict))
 
         if not programs:
@@ -1029,10 +990,11 @@ class ProgramDatabase:
             progs_with_metrics = [p for p in programs if p.public_metrics]
             sorted_p = sorted(
                 progs_with_metrics,
-                key=lambda p_item: sum(p_item.public_metrics.values())
-                / len(p_item.public_metrics)
-                if p_item.public_metrics
-                else -float("inf"),
+                key=lambda p_item: (
+                    sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
+                    if p_item.public_metrics
+                    else -float("inf")
+                ),
                 reverse=True,
             )
 
@@ -1076,9 +1038,7 @@ class ProgramDatabase:
         """Get all programs from a specific generation."""
         if not self.cursor:
             raise ConnectionError("DB not connected.")
-        self.cursor.execute(
-            "SELECT * FROM programs WHERE generation = ?", (generation,)
-        )
+        self.cursor.execute("SELECT * FROM programs WHERE generation = ?", (generation,))
         rows = self.cursor.fetchall()
         programs = [self._program_from_row(row) for row in rows]
         return [p for p in programs if p is not None]
@@ -1113,8 +1073,7 @@ class ProgramDatabase:
         elif metric == "timestamp":
             # Direct timestamp sorting
             query = (
-                f"SELECT * FROM programs {correctness_filter} "
-                "ORDER BY timestamp DESC LIMIT ?"
+                f"SELECT * FROM programs {correctness_filter} " "ORDER BY timestamp DESC LIMIT ?"
             )
             self.cursor.execute(query, (n,))
             all_rows = self.cursor.fetchall()
@@ -1171,9 +1130,7 @@ class ProgramDatabase:
         if programs:
             if metric:
                 progs_with_metric = [
-                    p
-                    for p in programs
-                    if p.public_metrics and metric in p.public_metrics
+                    p for p in programs if p.public_metrics and metric in p.public_metrics
                 ]
                 sorted_p = sorted(
                     progs_with_metric,
@@ -1184,10 +1141,11 @@ class ProgramDatabase:
                 progs_with_metrics = [p for p in programs if p.public_metrics]
                 sorted_p = sorted(
                     progs_with_metrics,
-                    key=lambda p_item: sum(p_item.public_metrics.values())
-                    / len(p_item.public_metrics)
-                    if p_item.public_metrics
-                    else -float("inf"),
+                    key=lambda p_item: (
+                        sum(p_item.public_metrics.values()) / len(p_item.public_metrics)
+                        if p_item.public_metrics
+                        else -float("inf")
+                    ),
                     reverse=True,
                 )
 
@@ -1254,9 +1212,7 @@ class ProgramDatabase:
         self.config.db_path = str(db_path_obj)  # Update config
 
         if not db_path_obj.exists():
-            logger.warning(
-                f"DB file '{db_path_obj}' not found. New DB created if writes occur."
-            )
+            logger.warning(f"DB file '{db_path_obj}' not found. New DB created if writes occur.")
             db_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
         self.conn = sqlite3.connect(str(db_path_obj), timeout=30.0)
@@ -1361,9 +1317,7 @@ class ProgramDatabase:
                     )
                 )
 
-            if (
-                not archive_programs_for_cmp
-            ):  # Should be populated if archived_rows existed
+            if not archive_programs_for_cmp:  # Should be populated if archived_rows existed
                 self.cursor.execute(
                     "INSERT OR IGNORE INTO archive (program_id) VALUES (?)",
                     (program.id,),
@@ -1381,12 +1335,8 @@ class ProgramDatabase:
                     "DELETE FROM archive WHERE program_id = ?",
                     (worst_in_archive.id,),
                 )
-                self.cursor.execute(
-                    "INSERT INTO archive (program_id) VALUES (?)", (program.id,)
-                )
-                logger.info(
-                    f"Program {program.id} replaced {worst_in_archive.id} in archive."
-                )
+                self.cursor.execute("INSERT INTO archive (program_id) VALUES (?)", (program.id,))
+                logger.info(f"Program {program.id} replaced {worst_in_archive.id} in archive.")
         self.conn.commit()
 
     @db_retry()
@@ -1480,18 +1430,14 @@ class ProgramDatabase:
         return float(similarity)
 
     @db_retry()
-    def compute_similarity_thread_safe(
-        self, vec: List[float], island_idx: int
-    ) -> List[float]:
+    def compute_similarity_thread_safe(self, vec: List[float], island_idx: int) -> List[float]:
         """
         Thread-safe version of similarity computation. Creates its own DB connection.
         """
         conn = None
         try:
             # Create a new connection for this thread
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
+            conn = sqlite3.connect(self.config.db_path, check_same_thread=False, timeout=60.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1520,9 +1466,7 @@ class ProgramDatabase:
                 conn.close()
 
     @db_retry()
-    def compute_similarity(
-        self, code_embedding: List[float], island_idx: int
-    ) -> List[float]:
+    def compute_similarity(self, code_embedding: List[float], island_idx: int) -> List[float]:
         """
         Compute similarity scores between the given embedding and all programs
         in the specified island.
@@ -1571,8 +1515,7 @@ class ProgramDatabase:
                 continue
 
         logger.debug(
-            f"Computed {len(similarity_scores)} similarity scores for "
-            f"island {island_idx}"
+            f"Computed {len(similarity_scores)} similarity scores for " f"island {island_idx}"
         )
         return similarity_scores
 
@@ -1646,17 +1589,13 @@ class ProgramDatabase:
             The most similar Program object, or None if not found
         """
         if not code_embedding:
-            logger.warning(
-                "Empty code embedding provided to get_most_similar_program_thread_safe"
-            )
+            logger.warning("Empty code embedding provided to get_most_similar_program_thread_safe")
             return None
 
         conn = None
         try:
             # Create a new connection for this thread
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
+            conn = sqlite3.connect(self.config.db_path, check_same_thread=False, timeout=60.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1689,9 +1628,7 @@ class ProgramDatabase:
                         similarities.append(similarity)
                         program_ids.append(row["id"])
                 except (json.JSONDecodeError, ValueError, ZeroDivisionError) as e:
-                    logger.warning(
-                        f"Error computing similarity for program {row['id']}: {e}"
-                    )
+                    logger.warning(f"Error computing similarity for program {row['id']}: {e}")
                     continue
 
             if not similarities:
@@ -1745,12 +1682,8 @@ class ProgramDatabase:
                 "Recomputing PCA-reduced embedding features for %s programs.",
                 len(program_ids),
             )
-            reduced_2d = self.embedding_client.get_dim_reduction(
-                embeddings, method="pca", dims=2
-            )
-            reduced_3d = self.embedding_client.get_dim_reduction(
-                embeddings, method="pca", dims=3
-            )
+            reduced_2d = self.embedding_client.get_dim_reduction(embeddings, method="pca", dims=2)
+            reduced_3d = self.embedding_client.get_dim_reduction(embeddings, method="pca", dims=3)
             cluster_ids = self.embedding_client.get_embedding_clusters(
                 embeddings, num_clusters=num_clusters
             )
@@ -1801,9 +1734,7 @@ class ProgramDatabase:
         conn = None
         try:
             # Create a new connection for this thread
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
+            conn = sqlite3.connect(self.config.db_path, check_same_thread=False, timeout=60.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1882,9 +1813,7 @@ class ProgramDatabase:
                 )
             except Exception as e:
                 conn.rollback()
-                logger.error(
-                    "Failed to update programs with new embedding features: %s", e
-                )
+                logger.error("Failed to update programs with new embedding features: %s", e)
                 raise  # Re-raise exception
 
         except Exception as e:
@@ -1900,9 +1829,7 @@ class ProgramDatabase:
         """Thread-safe version of get_programs_by_generation."""
         conn = None
         try:
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
+            conn = sqlite3.connect(self.config.db_path, check_same_thread=False, timeout=60.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1946,9 +1873,7 @@ class ProgramDatabase:
         """Thread-safe version of get_top_programs."""
         conn = None
         try:
-            conn = sqlite3.connect(
-                self.config.db_path, check_same_thread=False, timeout=60.0
-            )
+            conn = sqlite3.connect(self.config.db_path, check_same_thread=False, timeout=60.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -1989,16 +1914,11 @@ class ProgramDatabase:
                         try:
                             program_data[key] = json.loads(value)
                         except json.JSONDecodeError:
-                            is_dict_field = (
-                                key.endswith("_metrics") or key == "metadata"
-                            )
+                            is_dict_field = key.endswith("_metrics") or key == "metadata"
                             program_data[key] = {} if is_dict_field else []
 
                 # Handle text_feedback
-                if (
-                    "text_feedback" not in program_data
-                    or program_data["text_feedback"] is None
-                ):
+                if "text_feedback" not in program_data or program_data["text_feedback"] is None:
                     program_data["text_feedback"] = ""
 
                 programs.append(Program.from_dict(program_data))

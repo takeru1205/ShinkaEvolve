@@ -149,9 +149,28 @@ GEMINI_MODELS = {
         "input_price": 0.1 / M,
         "output_price": 0.4 / M,
     },
-    "gemini-3-pro-preview" : {
+    "gemini-3-pro-preview": {
         "input_price": 2.0 / M,
         "output_price": 12.0 / M,
+    },
+}
+
+CHUTES_MODELS = {
+    "deepseek-ai/DeepSeek-V3.2-TEE": {
+        "input_price": 0.0 / M,  # Update with actual pricing
+        "output_price": 0.0 / M,
+    },
+    "zai-org/GLM-4.7-TEE": {
+        "input_price": 0.0 / M,
+        "output_price": 0.0 / M,
+    },
+    "tngtech/DeepSeek-TNG-R1T2-Chimera": {
+        "input_price": 0.0 / M,
+        "output_price": 0.0 / M,
+    },
+    "moonshotai/Kimi-K2-Thinking-TEE": {
+        "input_price": 0.0 / M,
+        "output_price": 0.0 / M,
     },
 }
 
@@ -159,18 +178,12 @@ BEDROCK_MODELS = {
     "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0": CLAUDE_MODELS[
         "claude-3-5-sonnet-20241022"
     ],
-    "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0": CLAUDE_MODELS[
-        "claude-3-5-haiku-20241022"
-    ],
-    "bedrock/anthropic.claude-3-opus-20240229-v1:0": CLAUDE_MODELS[
-        "claude-3-opus-20240229"
-    ],
+    "bedrock/anthropic.claude-3-5-haiku-20241022-v1:0": CLAUDE_MODELS["claude-3-5-haiku-20241022"],
+    "bedrock/anthropic.claude-3-opus-20240229-v1:0": CLAUDE_MODELS["claude-3-opus-20240229"],
     "bedrock/us.anthropic.claude-3-7-sonnet-20250219-v1:0": CLAUDE_MODELS[
         "claude-3-7-sonnet-20250219"
     ],
-    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": CLAUDE_MODELS[
-        "claude-4-sonnet-20250514"
-    ],
+    "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": CLAUDE_MODELS["claude-4-sonnet-20250514"],
 }
 
 REASONING_OAI_MODELS = [

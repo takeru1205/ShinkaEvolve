@@ -1,35 +1,37 @@
-import shutil
-import uuid
-import time
 import logging
-import yaml
-from rich.logging import RichHandler
-from rich.table import Table
-from rich.console import Console
-import rich.box
-from typing import List, Optional, Union, cast
+import shutil
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from dataclasses import dataclass, field, asdict
 from subprocess import Popen
-from shinka.launch import JobScheduler, JobConfig, ProcessWithLogging
-from shinka.database import ProgramDatabase, DatabaseConfig, Program
-from shinka.llm import (
-    LLMClient,
-    extract_between,
-    EmbeddingClient,
-    BanditBase,
-    AsymmetricUCB,
-)
+from typing import List, Optional, Union, cast
+
+import rich.box
+import yaml
+from rich.console import Console
+from rich.logging import RichHandler
+from rich.table import Table
+
+from shinka.core.novelty_judge import NoveltyJudge
+from shinka.core.sampler import PromptSampler
+from shinka.core.summarizer import MetaSummarizer
+from shinka.database import DatabaseConfig, Program, ProgramDatabase
 from shinka.edit import (
     apply_diff_patch,
     apply_full_patch,
-    summarize_diff,
     redact_immutable,
+    summarize_diff,
 )
-from shinka.core.sampler import PromptSampler
-from shinka.core.summarizer import MetaSummarizer
-from shinka.core.novelty_judge import NoveltyJudge
+from shinka.launch import JobConfig, JobScheduler, ProcessWithLogging
+from shinka.llm import (
+    AsymmetricUCB,
+    BanditBase,
+    EmbeddingClient,
+    LLMClient,
+    extract_between,
+)
 from shinka.logo import print_gradient_logo
 
 FOLDER_PREFIX = "gen"
@@ -158,12 +160,16 @@ class EvolutionRunner:
 
         # Initialize database and scheduler
         db_config.db_path = str(db_path)
+        # Allow embedding_model to be None (use LLM-based novelty detection instead)
         embedding_model_to_use = (
-            evo_config.embedding_model or "text-embedding-3-small"
+            evo_config.embedding_model
+            if evo_config.embedding_model is not None
+            else "text-embedding-3-small"
+            if evo_config.embedding_model != None  # explicitly check for None vs default
+            else None
         )
-        self.db = ProgramDatabase(
-            config=db_config, embedding_model=embedding_model_to_use
-        )
+        # Simplified: just pass the value directly, let dbase handle None
+        self.db = ProgramDatabase(config=db_config, embedding_model=evo_config.embedding_model)
         self.scheduler = JobScheduler(
             job_type=evo_config.job_type,
             config=job_config,  # type: ignore
@@ -317,9 +323,7 @@ class EvolutionRunner:
             logger.info("Starting parallel execution for remaining generations...")
 
             # Main loop: monitor jobs and submit new ones
-            while (
-                self.completed_generations < target_gens or len(self.running_jobs) > 0
-            ):
+            while self.completed_generations < target_gens or len(self.running_jobs) > 0:
                 # Check for completed jobs
                 completed_jobs = self._check_completed_jobs()
 
@@ -411,9 +415,7 @@ class EvolutionRunner:
             )
 
             if initial_code:
-                patch_name = extract_between(
-                    response.content, "<NAME>", "</NAME>", False
-                )
+                patch_name = extract_between(response.content, "<NAME>", "</NAME>", False)
                 patch_description = extract_between(
                     response.content, "<DESCRIPTION>", "</DESCRIPTION>", False
                 )
@@ -472,19 +474,14 @@ class EvolutionRunner:
 
         if self.evo_config.init_program_path:
             if self.verbose:
-                logger.info(
-                    f"Copying initial program from {self.evo_config.init_program_path}"
-                )
+                logger.info(f"Copying initial program from {self.evo_config.init_program_path}")
             shutil.copy(self.evo_config.init_program_path, exec_fname)
         else:
             if self.verbose:
                 logger.info(
-                    "`init_program_path` not provided, "
-                    "generating initial program with LLM..."
+                    "`init_program_path` not provided, " "generating initial program with LLM..."
                 )
-            initial_code, patch_name, patch_description, api_costs = (
-                self.generate_initial_program()
-            )
+            initial_code, patch_name, patch_description, api_costs = self.generate_initial_program()
             with open(exec_fname, "w", encoding="utf-8") as f:
                 f.write(initial_code)
 
@@ -565,17 +562,13 @@ class EvolutionRunner:
                 f"{len(self.meta_summarizer.evaluated_since_last_meta)} programs..."
             )
             best_program = self.db.get_best_program()
-            updated_recs, meta_cost = self.meta_summarizer.update_meta_memory(
-                best_program
-            )
+            updated_recs, meta_cost = self.meta_summarizer.update_meta_memory(best_program)
             if updated_recs:
                 # Write meta output file for generation 0
                 self.meta_summarizer.write_meta_output(str(self.results_dir))
                 # Store meta cost for tracking
                 if meta_cost > 0:
-                    logger.info(
-                        f"Meta recommendation generation cost: ${meta_cost:.4f}"
-                    )
+                    logger.info(f"Meta recommendation generation cost: ${meta_cost:.4f}")
                     # Add meta cost to this program's metadata (the one that triggered the update)
                     if db_program.metadata is None:
                         db_program.metadata = {}
@@ -626,9 +619,7 @@ class EvolutionRunner:
 
         self.next_generation_to_submit += 1
 
-        exec_fname = (
-            f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/main.{self.lang_ext}"
-        )
+        exec_fname = f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/main.{self.lang_ext}"
         results_dir = f"{self.results_dir}/{FOLDER_PREFIX}_{current_gen}/results"
         Path(results_dir).mkdir(parents=True, exist_ok=True)
 
@@ -676,10 +667,7 @@ class EvolutionRunner:
                         resample_attempt=resample + 1,
                     )
                     api_costs += meta_patch_data["api_costs"]
-                    if (
-                        meta_patch_data["error_attempt"] is None
-                        and num_applied_attempt > 0
-                    ):
+                    if meta_patch_data["error_attempt"] is None and num_applied_attempt > 0:
                         meta_patch_data["api_costs"] = api_costs
                         break
 
@@ -703,12 +691,8 @@ class EvolutionRunner:
 
                     # Update costs and metadata from novelty assessment
                     novelty_cost += novelty_metadata.get("novelty_total_cost", 0.0)
-                    novelty_checks_performed = novelty_metadata.get(
-                        "novelty_checks_performed", 0
-                    )
-                    novelty_explanation = novelty_metadata.get(
-                        "novelty_explanation", ""
-                    )
+                    novelty_checks_performed = novelty_metadata.get("novelty_checks_performed", 0)
+                    novelty_explanation = novelty_metadata.get("novelty_explanation", "")
 
                     if should_accept:
                         break
@@ -859,17 +843,13 @@ class EvolutionRunner:
                 f"{len(self.meta_summarizer.evaluated_since_last_meta)} programs..."
             )
             best_program = self.db.get_best_program()
-            updated_recs, meta_cost = self.meta_summarizer.update_meta_memory(
-                best_program
-            )
+            updated_recs, meta_cost = self.meta_summarizer.update_meta_memory(best_program)
             if updated_recs:
                 # Write meta output file using accumulated program count
                 self.meta_summarizer.write_meta_output(str(self.results_dir))
                 # Store meta cost for tracking
                 if meta_cost > 0:
-                    logger.info(
-                        f"Meta recommendation generation cost: ${meta_cost:.4f}"
-                    )
+                    logger.info(f"Meta recommendation generation cost: ${meta_cost:.4f}")
                     # Add meta cost to this program's metadata (the one that triggered the update)
                     if db_program.metadata is None:
                         db_program.metadata = {}
@@ -891,9 +871,7 @@ class EvolutionRunner:
                     "unable to update model selection algorithm."
                 )
             else:
-                parent = (
-                    self.db.get(db_program.parent_id) if db_program.parent_id else None
-                )
+                parent = self.db.get(db_program.parent_id) if db_program.parent_id else None
                 baseline = parent.combined_score if parent else None
                 reward = db_program.combined_score if correct_val else None
                 model_name = db_program.metadata["model_name"]
@@ -930,9 +908,7 @@ class EvolutionRunner:
         best_programs = self.db.get_top_programs(n=1, correct_only=True)
         if not best_programs:
             if self.verbose:
-                logger.debug(
-                    "No correct programs found yet, cannot determine best solution."
-                )
+                logger.debug("No correct programs found yet, cannot determine best solution.")
             return
 
         best_program = best_programs[0]
@@ -1001,9 +977,7 @@ class EvolutionRunner:
             self.llm_selection.update_submitted(model_name)
         code_diff = None  # Initialize code_diff
         num_applied_attempt = 0  # Initialize num_applied_attempt
-        error_attempt = (
-            "Max attempts reached without successful patch."  # Default error
-        )
+        error_attempt = "Max attempts reached without successful patch."  # Default error
         patch_name = None
         patch_description = None
         output_path_attempt = None
@@ -1073,9 +1047,7 @@ class EvolutionRunner:
 
             if error_attempt is None and num_applied_attempt > 0:
                 if patch_path:  # Ensure patch_path is not None
-                    diff_summary = summarize_diff(
-                        str(patch_path)
-                    )  # Convert Path to str
+                    diff_summary = summarize_diff(str(patch_path))  # Convert Path to str
                 if self.verbose:
                     logger.info(
                         f"  PATCH ATTEMPT {patch_attempt + 1}/{max_patch_attempts} SUCCESS. "
@@ -1086,9 +1058,7 @@ class EvolutionRunner:
                 code_diff = patch_txt_attempt
                 break  # Break from patch attempts
             else:
-                error_str = (
-                    str(error_attempt) if error_attempt else "No changes applied."
-                )
+                error_str = str(error_attempt) if error_attempt else "No changes applied."
                 patch_msg = (
                     "The previous edit was not successful."
                     + " This was the error message: \n\n"
@@ -1151,9 +1121,7 @@ class EvolutionRunner:
                             f"Redacted: {len(redacted_code)}"
                         )
 
-                    embedding_result, e_cost = self.embedding.get_embedding(
-                        redacted_code
-                    )
+                    embedding_result, e_cost = self.embedding.get_embedding(redacted_code)
                 else:
                     if self.verbose:
                         logger.debug("=> EMBED: No embedding model configured.")
@@ -1293,8 +1261,6 @@ class EvolutionRunner:
             logger.info("Successfully restored meta memory state")
         else:
             if meta_memory_path.exists():
-                logger.warning(
-                    f"Meta memory file exists but failed to load: {meta_memory_path}"
-                )
+                logger.warning(f"Meta memory file exists but failed to load: {meta_memory_path}")
             else:
                 logger.info("No previous meta memory state found - starting fresh")

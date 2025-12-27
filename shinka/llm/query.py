@@ -1,28 +1,32 @@
-from typing import List, Union, Optional, Dict
+import logging
 import random
+from typing import Dict, List, Optional, Union
+
 from pydantic import BaseModel
+
 from .client import get_client_llm
+from .models import (
+    QueryResult,
+    query_anthropic,
+    query_chutes,
+    query_deepseek,
+    query_gemini,
+    query_openai,
+)
 from .models.pricing import (
+    BEDROCK_MODELS,
+    CHUTES_MODELS,
     CLAUDE_MODELS,
-    OPENAI_MODELS,
     DEEPSEEK_MODELS,
     GEMINI_MODELS,
-    BEDROCK_MODELS,
-    REASONING_OAI_MODELS,
+    OPENAI_MODELS,
+    REASONING_AZURE_MODELS,
+    REASONING_BEDROCK_MODELS,
     REASONING_CLAUDE_MODELS,
     REASONING_DEEPSEEK_MODELS,
     REASONING_GEMINI_MODELS,
-    REASONING_AZURE_MODELS,
-    REASONING_BEDROCK_MODELS,
+    REASONING_OAI_MODELS,
 )
-from .models import (
-    query_anthropic,
-    query_openai,
-    query_deepseek,
-    query_gemini,
-    QueryResult,
-)
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +103,10 @@ def sample_model_kwargs(
     # perform model sampling if list provided
     if model_sample_probs is not None:
         if len(model_sample_probs) != len(model_names):
-            raise ValueError(
-                "model_sample_probs must have the same length as model_names"
-            )
+            raise ValueError("model_sample_probs must have the same length as model_names")
         if not abs(sum(model_sample_probs) - 1.0) < 1e-9:
             raise ValueError("model_sample_probs must sum to 1")
-        kwargs_dict["model_name"] = random.choices(
-            model_names, weights=model_sample_probs, k=1
-        )[0]
+        kwargs_dict["model_name"] = random.choices(model_names, weights=model_sample_probs, k=1)[0]
     else:
         kwargs_dict["model_name"] = random.choice(model_names)
 
@@ -150,9 +150,7 @@ def sample_model_kwargs(
                 }
             }
 
-    elif kwargs_dict["model_name"] in (
-        REASONING_CLAUDE_MODELS + REASONING_BEDROCK_MODELS
-    ):
+    elif kwargs_dict["model_name"] in (REASONING_CLAUDE_MODELS + REASONING_BEDROCK_MODELS):
         kwargs_dict["max_tokens"] = min(random.choice(max_tokens), 16384)
         r_effort = random.choice(reasoning_efforts)
         think_bool = r_effort != "auto"
@@ -175,6 +173,7 @@ def sample_model_kwargs(
             or kwargs_dict["model_name"] in REASONING_BEDROCK_MODELS
             or kwargs_dict["model_name"] in DEEPSEEK_MODELS
             or kwargs_dict["model_name"] in REASONING_DEEPSEEK_MODELS
+            or kwargs_dict["model_name"] in CHUTES_MODELS
         ):
             kwargs_dict["max_tokens"] = random.choice(max_tokens)
         else:
@@ -193,9 +192,7 @@ def query(
     **kwargs,
 ) -> QueryResult:
     """Query the LLM."""
-    client, model_name = get_client_llm(
-        model_name, structured_output=output_model is not None
-    )
+    client, model_name = get_client_llm(model_name, structured_output=output_model is not None)
     if model_name in CLAUDE_MODELS.keys() or "anthropic" in model_name:
         query_fn = query_anthropic
     elif model_name in OPENAI_MODELS.keys():
@@ -204,6 +201,9 @@ def query(
         query_fn = query_deepseek
     elif model_name in GEMINI_MODELS.keys():
         query_fn = query_gemini
+    elif model_name in CHUTES_MODELS.keys():
+        # chutes.ai uses dedicated query function
+        query_fn = query_chutes
     else:
         raise ValueError(f"Model {model_name} not supported.")
     result = query_fn(

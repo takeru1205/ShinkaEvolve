@@ -1,16 +1,19 @@
-from typing import Any, Tuple
 import os
-import anthropic
-import openai
-import instructor
 from pathlib import Path
+from typing import Any, Tuple
+
+import anthropic
+import instructor
+import openai
 from dotenv import load_dotenv
+
 from .models.pricing import (
-    CLAUDE_MODELS,
     BEDROCK_MODELS,
-    OPENAI_MODELS,
+    CHUTES_MODELS,
+    CLAUDE_MODELS,
     DEEPSEEK_MODELS,
     GEMINI_MODELS,
+    OPENAI_MODELS,
 )
 
 env_path = Path(__file__).parent.parent.parent / ".env"
@@ -33,9 +36,7 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
     if model_name in CLAUDE_MODELS.keys():
         client = anthropic.Anthropic()
         if structured_output:
-            client = instructor.from_anthropic(
-                client, mode=instructor.mode.Mode.ANTHROPIC_JSON
-            )
+            client = instructor.from_anthropic(client, mode=instructor.mode.Mode.ANTHROPIC_JSON)
     elif model_name in BEDROCK_MODELS.keys():
         model_name = model_name.split("/")[-1]
         client = anthropic.AnthropicBedrock(
@@ -44,9 +45,7 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
             aws_region=os.getenv("AWS_REGION_NAME"),
         )
         if structured_output:
-            client = instructor.from_anthropic(
-                client, mode=instructor.mode.Mode.ANTHROPIC_JSON
-            )
+            client = instructor.from_anthropic(client, mode=instructor.mode.Mode.ANTHROPIC_JSON)
     elif model_name in OPENAI_MODELS.keys():
         client = openai.OpenAI()
         if structured_output:
@@ -78,6 +77,13 @@ def get_client_llm(model_name: str, structured_output: bool = False) -> Tuple[An
                 client,
                 mode=instructor.Mode.GEMINI_JSON,
             )
+    elif model_name in CHUTES_MODELS.keys():
+        client = openai.OpenAI(
+            api_key=os.environ["CHUTES_API_TOKEN"],
+            base_url="https://llm.chutes.ai/v1",
+        )
+        if structured_output:
+            client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
     else:
         raise ValueError(f"Model {model_name} not supported.")
 
