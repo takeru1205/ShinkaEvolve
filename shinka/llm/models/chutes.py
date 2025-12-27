@@ -59,6 +59,13 @@ def query_chutes(
         reasoning_content = ""
         usage = None
         for chunk in stream:
+            # Skip chunks without choices (common in streaming)
+            if not chunk.choices or len(chunk.choices) == 0:
+                # Some APIs return usage in the last chunk without choices
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    usage = chunk.usage
+                continue
+
             delta = chunk.choices[0].delta
             if delta.content:
                 content += delta.content
@@ -67,7 +74,7 @@ def query_chutes(
                 reasoning_content += delta.reasoning_content
             elif hasattr(delta, 'reasoning') and delta.reasoning:
                 reasoning_content += delta.reasoning
-            # Some APIs return usage in the last chunk
+            # Some APIs return usage in chunks with choices too
             if hasattr(chunk, 'usage') and chunk.usage:
                 usage = chunk.usage
 
