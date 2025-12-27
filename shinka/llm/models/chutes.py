@@ -47,8 +47,12 @@ def query_chutes(
     messages.append({"role": "user", "content": msg})
 
     # Call the OpenAI-compatible API
+    # Explicitly disable streaming to avoid max_tokens=6144 limit
+    # Non-streaming requests support up to 163,840 tokens
     if output_model is None:
-        response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+        response = client.chat.completions.create(
+            model=model, messages=messages, stream=False, **kwargs
+        )
 
         # Get content from message
         message = response.choices[0].message
@@ -71,8 +75,9 @@ def query_chutes(
                 )
     else:
         # Structured output with instructor
+        # Explicitly disable streaming to avoid max_tokens=6144 limit
         response = client.chat.completions.create(
-            model=model, messages=messages, response_model=output_model, **kwargs
+            model=model, messages=messages, response_model=output_model, stream=False, **kwargs
         )
         content = response
 
