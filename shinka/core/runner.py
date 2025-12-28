@@ -933,6 +933,41 @@ class EvolutionRunner:
                 f"Copied to {best_dir}"
             )
 
+    def _truncate_msg_history_reasoning(
+        self, msg_history: List[Dict], max_length: int = 50000
+    ) -> List[Dict]:
+        """
+        Truncate reasoning content in message history to prevent unbounded growth.
+
+        Args:
+            msg_history: Message history list
+            max_length: Maximum length for assistant messages (default: 50KB)
+
+        Returns:
+            Cleaned message history
+        """
+        cleaned_history = []
+        for msg in msg_history:
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if len(content) > max_length:
+                    # Truncate long assistant messages (likely containing bloated reasoning)
+                    truncated_content = (
+                        content[:max_length]
+                        + f"\n... [truncated {len(content) - max_length} chars for context management] ..."
+                    )
+                    cleaned_history.append({"role": "assistant", "content": truncated_content})
+                    if self.verbose:
+                        logger.debug(
+                            f"Truncated assistant message from {len(content)} to {max_length} chars"
+                        )
+                else:
+                    cleaned_history.append(msg)
+            else:
+                cleaned_history.append(msg)
+
+        return cleaned_history
+
     def run_patch(
         self,
         parent_program: Program,
@@ -1071,7 +1106,12 @@ class EvolutionRunner:
                         f"Error: '{error_str}', "
                         f"Patches Applied: {num_applied_attempt}."
                     )
-                msg_history = response.new_msg_history
+
+                # Clean up msg_history to prevent reasoning content bloat
+                msg_history = self._truncate_msg_history_reasoning(
+                    response.new_msg_history, max_length=50000
+                )
+
                 code_diff = None
                 if patch_attempt == max_patch_attempts - 1:  # Last attempt failed
                     # error_attempt is already set from apply_patch or default
