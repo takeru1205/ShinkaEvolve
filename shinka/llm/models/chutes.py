@@ -18,6 +18,85 @@ def backoff_handler(details):
         )
 
 
+def estimate_input_tokens(messages) -> int:
+    """
+    Estimate input tokens for a list of messages.
+    Uses simple heuristic: 1 token ≈ 4 characters for most languages.
+
+    Args:
+        messages: List of message dictionaries with 'role' and 'content'
+
+    Returns:
+        Estimated token count
+    """
+    total_chars = 0
+    for msg in messages:
+        if isinstance(msg, dict) and 'content' in msg:
+            content = msg['content']
+            if isinstance(content, str):
+                total_chars += len(content)
+            elif isinstance(content, list):
+                # Handle multi-modal content
+                for item in content:
+                    if isinstance(item, dict) and 'text' in item:
+                        total_chars += len(item['text'])
+
+    # Add overhead for message structure (role, formatting, etc.)
+    # Roughly 10 tokens per message
+    overhead = len(messages) * 10
+
+    # 1 token ≈ 4 chars (conservative estimate)
+    estimated_tokens = (total_chars // 4) + overhead
+
+    return estimated_tokens
+
+
+def calculate_safe_max_tokens(
+    model: str,
+    input_tokens: int,
+    default_max_tokens: int = 65536,
+    safety_buffer: int = 2000,
+) -> int:
+    """
+    Calculate safe max_tokens based on model context length and input size.
+
+    Args:
+        model: Model name
+        input_tokens: Estimated input token count
+        default_max_tokens: Default max tokens from config (default: 65536)
+        safety_buffer: Safety buffer in tokens (default: 2000)
+
+    Returns:
+        Safe max_tokens value
+    """
+    # Get model context length
+    model_info = CHUTES_MODELS.get(model, {})
+    max_context = model_info.get("max_context_length", 128000)  # Default 128K
+
+    # Calculate available tokens for output
+    available_tokens = max_context - input_tokens - safety_buffer
+
+    # Ensure available tokens is positive
+    if available_tokens <= 0:
+        logger.warning(
+            f"Input tokens ({input_tokens}) exceed model context length ({max_context}). "
+            f"Using minimum max_tokens of 1024."
+        )
+        return 1024
+
+    # Cap at chutes.ai streaming limit (65536) and default config
+    max_allowed = min(65536, default_max_tokens)
+    safe_max_tokens = min(available_tokens, max_allowed)
+
+    logger.debug(
+        f"Token calculation - Model: {model}, Context: {max_context}, "
+        f"Input: {input_tokens}, Available: {available_tokens}, "
+        f"Safe max_tokens: {safe_max_tokens}"
+    )
+
+    return safe_max_tokens
+
+
 @backoff.on_exception(
     backoff.expo,
     (
@@ -46,18 +125,48 @@ def query_chutes(
     messages.extend(msg_history)
     messages.append({"role": "user", "content": msg})
 
+    # Estimate input tokens and adjust max_tokens dynamically
+    estimated_input_tokens = estimate_input_tokens(messages)
+
+    # Get max_tokens from kwargs, default to 65536
+    requested_max_tokens = kwargs.get('max_tokens', 65536)
+
+    # Calculate safe max_tokens
+    safe_max_tokens = calculate_safe_max_tokens(
+        model=model,
+        input_tokens=estimated_input_tokens,
+        default_max_tokens=requested_max_tokens,
+        safety_buffer=2000,
+    )
+
+    # Update kwargs with safe max_tokens
+    kwargs_copy = kwargs.copy()
+    kwargs_copy['max_tokens'] = safe_max_tokens
+
+    # Log if max_tokens was adjusted
+    if safe_max_tokens < requested_max_tokens:
+        logger.warning(
+            f"max_tokens adjusted from {requested_max_tokens} to {safe_max_tokens} "
+            f"(input: {estimated_input_tokens} tokens, model: {model})"
+        )
+
     # Call the OpenAI-compatible API
     # chutes.ai limits: streaming=65536 tokens, non-streaming=6144 tokens
     if output_model is None:
         # Use streaming for standard output to support up to 65536 tokens
         stream = client.chat.completions.create(
-            model=model, messages=messages, stream=True, **kwargs
+            model=model, messages=messages, stream=True, **kwargs_copy
         )
 
         # Collect content from streaming chunks
         content = ""
         reasoning_content = ""
         usage = None
+
+        # Limits for reasoning content to prevent unbounded growth
+        MAX_REASONING_LENGTH = 100000  # 100KB (~25K tokens)
+        reasoning_truncated = False
+
         for chunk in stream:
             # Skip chunks without choices (common in streaming)
             if not chunk.choices or len(chunk.choices) == 0:
@@ -69,11 +178,29 @@ def query_chutes(
             delta = chunk.choices[0].delta
             if delta.content:
                 content += delta.content
-            # Handle reasoning models
+
+            # Handle reasoning models with length limit
             if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                reasoning_content += delta.reasoning_content
+                if len(reasoning_content) < MAX_REASONING_LENGTH:
+                    reasoning_content += delta.reasoning_content
+                elif not reasoning_truncated:
+                    reasoning_content += f"\n... [reasoning truncated at {MAX_REASONING_LENGTH} chars] ..."
+                    reasoning_truncated = True
+                    logger.warning(
+                        f"Reasoning content truncated at {MAX_REASONING_LENGTH} chars "
+                        f"to prevent unbounded growth"
+                    )
             elif hasattr(delta, 'reasoning') and delta.reasoning:
-                reasoning_content += delta.reasoning
+                if len(reasoning_content) < MAX_REASONING_LENGTH:
+                    reasoning_content += delta.reasoning
+                elif not reasoning_truncated:
+                    reasoning_content += f"\n... [reasoning truncated at {MAX_REASONING_LENGTH} chars] ..."
+                    reasoning_truncated = True
+                    logger.warning(
+                        f"Reasoning content truncated at {MAX_REASONING_LENGTH} chars "
+                        f"to prevent unbounded growth"
+                    )
+
             # Some APIs return usage in chunks with choices too
             if hasattr(chunk, 'usage') and chunk.usage:
                 usage = chunk.usage
@@ -81,7 +208,10 @@ def query_chutes(
         # Use reasoning content if main content is empty
         if not content and reasoning_content:
             content = reasoning_content
-            logger.info(f"Using reasoning_content from streaming (length: {len(content)})")
+            logger.info(
+                f"Using reasoning_content from streaming "
+                f"(length: {len(content)}, truncated: {reasoning_truncated})"
+            )
 
         # Get token counts from usage if available, otherwise estimate
         if usage:
