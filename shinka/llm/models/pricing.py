@@ -159,18 +159,22 @@ CHUTES_MODELS = {
     "deepseek-ai/DeepSeek-V3.2-TEE": {
         "input_price": 0.0 / M,  # Update with actual pricing
         "output_price": 0.0 / M,
+        "max_context_length": 262144,  # 256K context
     },
     "zai-org/GLM-4.7-TEE": {
         "input_price": 0.0 / M,
         "output_price": 0.0 / M,
+        "max_context_length": 202752,  # ~200K context
     },
     "tngtech/DeepSeek-TNG-R1T2-Chimera": {
         "input_price": 0.0 / M,
         "output_price": 0.0 / M,
+        "max_context_length": 262144,  # 256K context (DeepSeek-based)
     },
     "moonshotai/Kimi-K2-Thinking-TEE": {
         "input_price": 0.0 / M,
         "output_price": 0.0 / M,
+        "max_context_length": 262144,  # 256K context (Kimi-based)
     },
 }
 
